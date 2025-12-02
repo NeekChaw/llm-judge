@@ -35,8 +35,7 @@
     "llm:providers": "curl 'http://localhost:3000/api/llm-config?action=providers'",
     "llm:models": "curl 'http://localhost:3000/api/llm-config?action=models'",
     "llm:refresh": "curl -X POST http://localhost:3000/api/llm-config -H 'Content-Type: application/json' -d '{\"action\":\"refresh\"}'",
-    "llm:test-integration": "tsx test-llm-integration.ts",
-    "db:migrate-llm": "psql -f database/migrations/005_enhance_llm_config.sql"
+    "llm:test-integration": "tsx test-llm-integration.ts"
   },
   "dependencies": {
     "@e2b/code-interpreter": "^1.5.1",

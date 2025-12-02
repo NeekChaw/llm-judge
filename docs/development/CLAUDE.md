@@ -107,11 +107,9 @@ npx tsx monitor-verification-results.ts
 
 ### Database Operations
 ```bash
-# Run database migrations
-npx tsx scripts/run-unified-config-migration.ts
-
-# 🆕 Run model default configuration migration (v2.5)
-npx tsx migrate-model-defaults.ts
+# 初始化数据库 (首次部署)
+# 在 Supabase SQL Editor 中执行 database/supabase_export.sql
+# Docker 全本地模式会自动初始化
 
 # Check database health
 curl http://localhost:3000/api/system/health

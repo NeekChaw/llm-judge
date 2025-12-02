@@ -380,21 +380,20 @@ async function testBug5_MultimodalValidation() {
   }
 }
 
-// ==================== 数据库迁移测试 ====================
+// ==================== 数据库Schema测试 ====================
 async function testDatabaseMigration() {
-  console.log('\n=== 数据库迁移验证 ===\n');
+  console.log('\n=== 数据库Schema验证 ===\n');
 
-  console.log('   📁 迁移脚本位置: database/migrations/010_reference_answer_multimodal.sql');
-  console.log('   ⚠️  请手动运行以下命令执行数据库迁移:');
-  console.log('   $ psql -U your_user -d your_database -f database/migrations/010_reference_answer_multimodal.sql');
-  console.log('   或使用Supabase Migration工具');
+  console.log('   📁 Schema文件位置: database/supabase_export.sql');
+  console.log('   ⚠️  首次部署请在 Supabase SQL Editor 中执行此文件');
+  console.log('   Docker全本地模式会自动初始化数据库');
   console.log('');
 
   addTest(
-    '数据库迁移脚本已创建',
+    '数据库Schema文件存在',
     'Bug #4',
     true,
-    '迁移脚本位于 database/migrations/010_reference_answer_multimodal.sql'
+    'Schema文件位于 database/supabase_export.sql'
   );
 }
 

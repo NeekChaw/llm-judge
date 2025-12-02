@@ -107,7 +107,7 @@ Write-ColorOutput Green "✅ 依赖安装完成"
 
 # 数据库设置提示
 Write-ColorOutput Yellow "`n🗄️  数据库设置..."
-Write-ColorOutput Cyan "ℹ️  请在 Supabase SQL Editor 中执行 database/migrations/ 中的SQL文件"
+Write-ColorOutput Cyan "ℹ️  请在 Supabase SQL Editor 中执行 database/supabase_export.sql"
 Read-Host "按回车继续"
 
 # 选择部署模式

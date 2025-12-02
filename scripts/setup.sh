@@ -128,10 +128,10 @@ install_dependencies() {
 setup_database() {
     echo -e "${YELLOW}🗄️  数据库设置...${NC}"
 
-    # 检查是否有迁移脚本
-    if [ -d "database/migrations" ]; then
-        echo -e "${BLUE}ℹ️  检测到数据库迁移文件${NC}"
-        echo -e "${YELLOW}请在 Supabase SQL Editor 中执行 database/migrations/ 中的SQL文件${NC}"
+    # 提示执行数据库初始化脚本
+    if [ -f "database/supabase_export.sql" ]; then
+        echo -e "${BLUE}ℹ️  检测到数据库初始化文件${NC}"
+        echo -e "${YELLOW}请在 Supabase SQL Editor 中执行 database/supabase_export.sql${NC}"
         echo -e "${BLUE}按回车继续...${NC}"
         read -r
     fi
