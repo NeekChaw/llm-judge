@@ -1,0 +1,156 @@
+# AI Benchmark V2 一键部署配置
+# Note: 'version' is obsolete in Docker Compose v2+, removed to avoid warnings
+
+services:
+  # 主应用服务
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SUPABASE_URL: ${SUPABASE_URL}
+        SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+    container_name: ai-benchmark-app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+
+      # 数据库配置 (从.env.local加载)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_STORAGE_BUCKET=${SUPABASE_STORAGE_BUCKET:-ai-benchmark}
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-supabase}
+
+      # Next.js 公开环境变量 (浏览器可访问)
+      - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - NEXT_PUBLIC_SUPABASE_ROLE_KEY=${NEXT_PUBLIC_SUPABASE_ROLE_KEY:-}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3000/api}
+
+      # Redis配置
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-ai_benchmark_redis_2025}
+      - REDIS_DB=${REDIS_DB:-0}
+      # 默认使用Script模式（稳定）而不是Redis模式
+      - TASK_PROCESSOR_MODE=${TASK_PROCESSOR_MODE:-script}
+
+      # API密钥加密配置（新增）
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+
+      # LLM API配置
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
+      - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+      - VOLCENGINE_API_KEY=${VOLCENGINE_API_KEY:-}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-}
+      - ALI_API_KEY=${ALI_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - DMX_API_KEY=${DMX_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-60000}
+      - DEFAULT_LLM_MODEL_ID=${DEFAULT_LLM_MODEL_ID:-gpt-4}
+
+      # E2B代码沙箱配置
+      - E2B_API_KEY=${E2B_API_KEY:-}
+      - E2B_TIMEOUT_MS=${E2B_TIMEOUT_MS:-300000}
+      - E2B_MAX_CONCURRENT_SANDBOXES=${E2B_MAX_CONCURRENT_SANDBOXES:-10}
+
+      # 性能配置
+      - DEFAULT_CONCURRENT_LIMIT=${DEFAULT_CONCURRENT_LIMIT:-5}
+      - DEFAULT_API_TIMEOUT=${DEFAULT_API_TIMEOUT:-60000}
+      - DEFAULT_MAX_RETRIES=${DEFAULT_MAX_RETRIES:-3}
+      - TASK_PROCESSOR_MODE=${TASK_PROCESSOR_MODE:-auto}
+      - SCRIPT_CHECK_INTERVAL=${SCRIPT_CHECK_INTERVAL:-5000}
+      - SCRIPT_CONCURRENT_LIMIT=${SCRIPT_CONCURRENT_LIMIT:-10}
+
+      # 文件上传限制
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-10485760}
+      - MAX_FILE_COUNT=${MAX_FILE_COUNT:-10}
+      - ALLOWED_MIME_TYPES=${ALLOWED_MIME_TYPES:-image/jpeg,image/png,image/gif,audio/mpeg,video/mp4}
+
+      # 其他
+      - TZ=${TZ:-Asia/Shanghai}
+      - NEXT_TELEMETRY_DISABLED=1
+    volumes:
+      - app_logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
+    healthcheck:
+      test: ["CMD", "node", "health-check.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Redis缓存和队列服务
+  redis:
+    image: redis:7-alpine
+    container_name: ai-benchmark-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server 
+      --appendonly yes 
+      --requirepass ${REDIS_PASSWORD:-ai_benchmark_redis_2025}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Nginx反向代理 (可选)
+  nginx:
+    image: nginx:alpine
+    container_name: ai-benchmark-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/ngin./config/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# 数据卷
+volumes:
+  redis_data:
+    driver: local
+  app_logs:
+    driver: local
+  nginx_logs:
+    driver: local
+
+# 网络配置
+networks:
+  ai-benchmark-network:
+    driver: bridge

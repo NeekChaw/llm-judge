@@ -1,0 +1,1175 @@
+'use client';
+
+import { Button } from '@/components/ui/button';
+import Link from 'next/link';
+import { useState, useEffect } from 'react';
+import { Play, Clock, CheckCircle, XCircle, PlusCircle, Activity, RefreshCw, Copy, Search, Filter, ChevronLeft, ChevronRight, DollarSign, BarChart3 } from 'lucide-react';
+import { apiClient } from '@/lib/api-client';
+import { useUserPreferences } from '@/lib/user-preferences';
+import { formatCost } from '@/lib/cost-calculator';
+import { 
+  checkAggregationCompatibility, 
+  TaskForAggregation, 
+  AggregationCompatibility,
+  AggregationType,
+  createAggregationId,
+  mergeModelsForVerticalAggregation,
+  mergeDimensionsForHorizontalAggregation
+} from '@/lib/aggregation-utils';
+import { useRouter } from 'next/navigation';
+
+interface TaskStats {
+  total: number;
+  running: number;
+  completed: number;
+  failed: number;
+  pending: number;
+}
+
+interface Task {
+  id: string;
+  name: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  created_at: string;
+  started_at?: string;
+  finished_at?: string;
+  progress: {
+    total: number;
+    completed: number;
+    failed: number;
+  };
+  // 🆕 添加多次运行相关字段
+  config?: {
+    run_count?: number;
+    [key: string]: any;
+  };
+  // 🆕 添加成本信息
+  cost_summary?: {
+    total_cost_usd: number;
+    total_cost_cny: number;
+    has_cost_data: boolean;
+    model_count: number;
+  };
+}
+
+export default function WorkbenchPage() {
+  const { currency } = useUserPreferences();
+  const router = useRouter();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [stats, setStats] = useState<TaskStats>({
+    total: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    pending: 0
+  });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // 🆕 局部加载状态
+  const [paginationLoading, setPaginationLoading] = useState(false);
+
+  // 🚀 缓存机制
+  const [taskCache, setTaskCache] = useState<Map<string, {
+    tasks: Task[];
+    pagination: any;
+    stats: any; // 🆕 缓存统计数据
+    timestamp: number;
+  }>>(new Map());
+  const CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
+  // 🆕 克隆任务相关状态
+  const [showCloneDialog, setShowCloneDialog] = useState(false);
+  const [cloneTaskId, setCloneTaskId] = useState<string | null>(null);
+  const [cloneTaskName, setCloneTaskName] = useState('');
+  const [cloning, setCloning] = useState(false);
+
+  // 🆕 多选任务相关状态
+  const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
+  const [aggregationCompatibility, setAggregationCompatibility] = useState<AggregationCompatibility | null>(null);
+  const [selectedTasksInfo, setSelectedTasksInfo] = useState<TaskForAggregation[]>([]);
+  const [loadingCompatibility, setLoadingCompatibility] = useState(false);
+
+  // 🆕 筛选和分页状态
+  const [searchName, setSearchName] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalTasks, setTotalTasks] = useState(0);
+  const pageSize = 10;
+
+  // 🚀 缓存辅助函数
+  const getCacheKey = (page: number, search: string, status: string, type: string) => {
+    return `${page}-${search}-${status}-${type}`;
+  };
+
+  const getCachedData = (cacheKey: string) => {
+    const cached = taskCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return cached;
+    }
+    return null;
+  };
+
+  const setCachedData = (cacheKey: string, tasks: Task[], pagination: any, stats: any) => {
+    const newCache = new Map(taskCache);
+    newCache.set(cacheKey, {
+      tasks,
+      pagination,
+      stats, // 🆕 缓存统计数据
+      timestamp: Date.now()
+    });
+    setTaskCache(newCache);
+  };
+
+  const clearCache = () => {
+    setTaskCache(new Map());
+  };
+
+  // 🚀 预加载下一页
+  const preloadNextPage = async (currentPage: number) => {
+    if (currentPage < totalPages) {
+      const nextPage = currentPage + 1;
+      const nextCacheKey = getCacheKey(nextPage, searchName, statusFilter, typeFilter);
+
+      // 检查下一页是否已缓存
+      if (!getCachedData(nextCacheKey)) {
+        console.log('🔮 预加载下一页:', nextPage);
+
+        // 在后台静默加载下一页
+        try {
+          const params: any = {
+            page: nextPage,
+            limit: pageSize,
+          };
+
+          if (searchName.trim()) {
+            params.search = searchName.trim();
+          }
+
+          if (statusFilter !== 'all') {
+            params.status = statusFilter;
+          }
+
+          if (typeFilter !== 'all') {
+            params.type = typeFilter === 'single' ? 'single' : 'multi';
+          }
+
+          const response = await apiClient.getTasks(params);
+
+          if (response.data) {
+            const tasksData = response.data.tasks.map(task => ({
+              id: task.id,
+              name: task.name,
+              status: task.status as Task['status'],
+              created_at: task.created_at,
+              started_at: task.started_at,
+              finished_at: task.finished_at,
+              progress: task.progress,
+              config: task.config
+            }));
+
+            // 缓存预加载的数据
+            setCachedData(nextCacheKey, tasksData, response.data.pagination, response.data.stats);
+            console.log('✅ 下一页预加载完成');
+          }
+        } catch (error) {
+          console.log('⚠️ 预加载失败:', error);
+          // 预加载失败不影响用户体验
+        }
+      }
+    }
+  };
+
+  const loadTasks = async (page = currentPage, loadingType: 'full' | 'pagination' | 'none' = 'full', forceRefresh = false) => {
+    try {
+      setError(null);
+
+      // 🚀 检查缓存
+      const cacheKey = getCacheKey(page, searchName, statusFilter, typeFilter);
+      if (!forceRefresh) {
+        const cachedData = getCachedData(cacheKey);
+        if (cachedData) {
+          console.log('🎯 使用缓存数据:', cacheKey);
+          setTasks(cachedData.tasks);
+          setCurrentPage(cachedData.pagination.page);
+          setTotalPages(cachedData.pagination.totalPages);
+          setTotalTasks(cachedData.pagination.total);
+
+          // 🆕 设置缓存的统计数据
+          if (cachedData.stats) {
+            setStats(cachedData.stats);
+          }
+
+          // 🚀 预加载下一页
+          preloadNextPage(page);
+          return;
+        }
+      }
+
+      // 🆕 根据加载类型设置不同的loading状态
+      if (loadingType === 'full') {
+        setLoading(true);
+      } else if (loadingType === 'pagination') {
+        setPaginationLoading(true);
+      }
+
+      console.log('🌐 从API加载数据:', cacheKey);
+
+      // 构建查询参数
+      const params: any = {
+        page,
+        limit: pageSize,
+      };
+
+      if (searchName.trim()) {
+        params.search = searchName.trim();
+      }
+
+      if (statusFilter !== 'all') {
+        params.status = statusFilter;
+      }
+
+      // 🆕 添加类型筛选参数
+      if (typeFilter !== 'all') {
+        params.type = typeFilter === 'single' ? 'single' : 'multi';
+      }
+
+      const response = await apiClient.getTasks(params);
+      
+      if (response.error) {
+        setError(response.error);
+        return;
+      }
+
+      if (response.data) {
+        const tasksData = response.data.tasks.map(task => ({
+          id: task.id,
+          name: task.name,
+          status: task.status as Task['status'],
+          created_at: task.created_at,
+          started_at: task.started_at,
+          finished_at: task.finished_at,
+          progress: task.progress,
+          config: task.config // 🆕 包含配置信息
+        }));
+
+        setTasks(tasksData);
+
+        // 🆕 设置分页信息
+        if (response.data.pagination) {
+          setCurrentPage(response.data.pagination.page);
+          setTotalPages(response.data.pagination.totalPages);
+          setTotalTasks(response.data.pagination.total);
+
+          // 🚀 缓存数据
+          setCachedData(cacheKey, tasksData, response.data.pagination, response.data.stats);
+        }
+
+        // 🔧 修复：使用API返回的统计数据
+        if (response.data.stats) {
+          setStats(response.data.stats);
+        } else {
+          // 兼容旧API，使用当前页数据计算
+          const taskStats = tasksData.reduce((acc, task) => {
+            acc.total++;
+            if (task.status === 'running') acc.running++;
+            else if (task.status === 'completed') acc.completed++;
+            else if (task.status === 'failed') acc.failed++;
+            else if (task.status === 'pending') acc.pending++;
+            return acc;
+          }, { total: totalTasks, running: 0, completed: 0, failed: 0, pending: 0 });
+
+          setStats(taskStats);
+        }
+
+        // 🚀 预加载下一页
+        preloadNextPage(page);
+      }
+    } catch (error) {
+      console.error('加载任务失败:', error);
+      setError('加载任务失败，请重试');
+    } finally {
+      // 🆕 根据加载类型结束对应的loading状态
+      if (loadingType === 'full') {
+        setLoading(false);
+      } else if (loadingType === 'pagination') {
+        setPaginationLoading(false);
+      }
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTasks(1, 'full'); // 初始加载使用全屏loading
+  }, []);
+
+  // 🆕 当筛选条件变化时重新加载
+  useEffect(() => {
+    if (searchName || statusFilter !== 'all' || typeFilter !== 'all') {
+      // 🚀 筛选条件变化时，先检查缓存
+      loadTasks(1, 'none'); // 筛选变化时不显示loading，因为是即时筛选
+    }
+  }, [searchName, statusFilter, typeFilter]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    clearCache(); // 🚀 清除缓存，强制刷新
+    await loadTasks(currentPage, 'none', true); // 强制刷新
+  };
+
+  // 🆕 处理搜索
+  const handleSearch = async () => {
+    setCurrentPage(1);
+    await loadTasks(1, 'none'); // 搜索时不显示loading，因为是即时搜索
+  };
+
+  // 🆕 处理筛选变化
+  const handleFilterChange = async (filterType: string, value: string) => {
+    if (filterType === 'status') {
+      setStatusFilter(value);
+    } else if (filterType === 'type') {
+      setTypeFilter(value);
+    }
+    setCurrentPage(1);
+    await loadTasks(1, 'none'); // 筛选变化时不显示loading
+  };
+
+  // 🆕 处理分页 - 使用局部加载
+  const handlePageChange = async (page: number) => {
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+      await loadTasks(page, 'pagination'); // 🔧 使用分页loading，不是全屏loading
+    }
+  };
+
+  // 🆕 处理克隆任务
+  const handleCloneTask = (taskId: string, taskName: string) => {
+    setCloneTaskId(taskId);
+    setCloneTaskName(`${taskName} - 副本`);
+    setShowCloneDialog(true);
+  };
+
+  // 🆕 执行克隆任务
+  const executeCloneTask = async () => {
+    if (!cloneTaskId || !cloneTaskName.trim()) return;
+
+    setCloning(true);
+    try {
+      const response = await fetch(`/api/tasks/${cloneTaskId}/clone`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: cloneTaskName.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '克隆任务失败');
+      }
+
+      const result = await response.json();
+
+      // 关闭对话框
+      setShowCloneDialog(false);
+      setCloneTaskId(null);
+      setCloneTaskName('');
+
+      // 刷新任务列表
+      clearCache(); // 🚀 清除缓存，因为有新任务
+      await loadTasks(currentPage, 'none', true); // 强制刷新
+
+      // 显示成功消息
+      alert(`任务克隆成功！新任务ID: ${result.task.id}`);
+
+    } catch (error) {
+      console.error('克隆任务失败:', error);
+      alert(error instanceof Error ? error.message : '克隆任务失败，请重试');
+    } finally {
+      setCloning(false);
+    }
+  };
+
+  // 🆕 多选功能处理函数
+  const toggleMultiSelectMode = () => {
+    setIsMultiSelectMode(!isMultiSelectMode);
+    setSelectedTasks(new Set()); // 清空选择
+  };
+
+  const handleTaskSelect = (taskId: string, selected: boolean) => {
+    const newSelected = new Set(selectedTasks);
+    if (selected) {
+      newSelected.add(taskId);
+    } else {
+      newSelected.delete(taskId);
+    }
+    setSelectedTasks(newSelected);
+    
+    // 触发兼容性检测
+    const selectedIds = Array.from(newSelected);
+    checkSelectedTasksCompatibility(selectedIds);
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    let newSelected: Set<string>;
+    if (checked) {
+      // 只选择已完成的任务
+      const completedTaskIds = tasks
+        .filter(task => task.status === 'completed')
+        .map(task => task.id);
+      newSelected = new Set(completedTaskIds);
+      setSelectedTasks(newSelected);
+    } else {
+      newSelected = new Set();
+      setSelectedTasks(newSelected);
+    }
+    
+    // 触发兼容性检测
+    checkSelectedTasksCompatibility(Array.from(newSelected));
+  };
+
+  const getSelectedCompletedTasks = () => {
+    return tasks.filter(task => 
+      selectedTasks.has(task.id) && task.status === 'completed'
+    );
+  };
+
+  // 🆕 检测聚合兼容性
+  const checkSelectedTasksCompatibility = async (taskIds: string[]) => {
+    if (taskIds.length < 2) {
+      setAggregationCompatibility(null);
+      setSelectedTasksInfo([]);
+      return;
+    }
+
+    setLoadingCompatibility(true);
+    try {
+      const response = await fetch('/api/tasks/aggregation-info', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ taskIds }),
+      });
+
+      if (!response.ok) {
+        throw new Error('获取任务信息失败');
+      }
+
+      const data = await response.json();
+      if (data.success && data.tasks) {
+        setSelectedTasksInfo(data.tasks);
+        const compatibility = checkAggregationCompatibility(data.tasks);
+        setAggregationCompatibility(compatibility);
+      }
+    } catch (error) {
+      console.error('检测聚合兼容性失败:', error);
+      setAggregationCompatibility(null);
+      setSelectedTasksInfo([]);
+    } finally {
+      setLoadingCompatibility(false);
+    }
+  };
+
+  const handleCreateAggregation = () => {
+    const selectedCompletedTasks = getSelectedCompletedTasks();
+    if (selectedCompletedTasks.length < 2) {
+      alert('请至少选择2个已完成的任务进行聚合分析');
+      return;
+    }
+    
+    if (!aggregationCompatibility || (!aggregationCompatibility.canVertical && !aggregationCompatibility.canHorizontal)) {
+      alert('选中的任务无法进行聚合分析，请检查任务兼容性');
+      return;
+    }
+    
+    if (!selectedTasksInfo || selectedTasksInfo.length === 0) {
+      alert('缺少任务信息，请重新选择任务');
+      return;
+    }
+
+    // 创建聚合分析
+    try {
+      // 确定聚合类型（优先纵向聚合）
+      const aggregationType: AggregationType = aggregationCompatibility.canVertical 
+        ? AggregationType.VERTICAL 
+        : AggregationType.HORIZONTAL;
+
+      // 生成聚合分析配置
+      const aggregationId = createAggregationId(selectedTasksInfo.map(t => t.id));
+      const now = new Date().toISOString();
+      
+      const models = aggregationType === AggregationType.VERTICAL
+        ? mergeModelsForVerticalAggregation(selectedTasksInfo)
+        : selectedTasksInfo[0]?.models || [];
+        
+      const dimensions = aggregationType === AggregationType.HORIZONTAL
+        ? mergeDimensionsForHorizontalAggregation(selectedTasksInfo)
+        : selectedTasksInfo[0]?.dimensions || [];
+
+      const aggregationConfig = {
+        id: aggregationId,
+        name: `聚合分析_${new Date().getTime()}`,
+        type: aggregationType,
+        taskIds: selectedTasksInfo.map(t => t.id),
+        taskNames: selectedTasksInfo.map(t => t.name),
+        createdAt: now,
+        modelCount: models.length,
+        dimensionCount: dimensions.length,
+        models: models,
+        dimensions: dimensions,
+        tasksInfo: selectedTasksInfo,
+        compatibility: aggregationCompatibility
+      };
+
+      // 保存到localStorage
+      const saved = localStorage.getItem('aggregation_analyses');
+      const analyses = saved ? JSON.parse(saved) : [];
+      analyses.push(aggregationConfig);
+      localStorage.setItem('aggregation_analyses', JSON.stringify(analyses));
+
+      // 跳转到聚合分析页面
+      router.push('/workbench/aggregation');
+
+    } catch (error) {
+      console.error('创建聚合分析失败:', error);
+      alert('创建聚合分析失败，请重试');
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'running':
+        return <Activity className="h-4 w-4 text-blue-500" />;
+      case 'completed':
+        return <CheckCircle className="h-4 w-4 text-green-500" />;
+      case 'failed':
+        return <XCircle className="h-4 w-4 text-red-500" />;
+      default:
+        return <Clock className="h-4 w-4 text-gray-400" />;
+    }
+  };
+
+  const getStatusText = (status: string) => {
+    switch (status) {
+      case 'running':
+        return '运行中';
+      case 'completed':
+        return '已完成';
+      case 'failed':
+        return '失败';
+      case 'cancelled':
+        return '已取消';
+      default:
+        return '等待中';
+    }
+  };
+
+  // 🆕 获取任务类型信息
+  const getTaskType = (task: Task) => {
+    const runCount = task.config?.run_count || 1;
+    return {
+      isMultiRun: runCount > 1,
+      runCount: runCount,
+      label: runCount > 1 ? `多次运行 (${runCount}次)` : '单次运行',
+      badgeColor: runCount > 1 ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-600'
+    };
+  };
+
+  // 🆕 格式化任务成本显示
+  const formatTaskCost = (task: Task) => {
+    if (!task.cost_summary || !task.cost_summary.has_cost_data) {
+      return '-';
+    }
+
+    const cost = currency === 'USD' 
+      ? task.cost_summary.total_cost_usd 
+      : task.cost_summary.total_cost_cny;
+    
+    return formatCost(cost, currency, 4);
+  };
+
+  // 🆕 加载任务成本信息
+  const loadTaskCostSummary = async (taskId: string): Promise<any> => {
+    try {
+      const response = await fetch(`/api/tasks/${taskId}/cost-summary`);
+      if (response.ok) {
+        const data = await response.json();
+        return data.cost_summary;
+      }
+    } catch (error) {
+      console.warn(`加载任务 ${taskId} 成本信息失败:`, error);
+    }
+    return null;
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'running':
+        return 'bg-blue-100 text-blue-800';
+      case 'completed':
+        return 'bg-green-100 text-green-800';
+      case 'failed':
+        return 'bg-red-100 text-red-800';
+      case 'cancelled':
+        return 'bg-gray-100 text-gray-800';
+      default:
+        return 'bg-yellow-100 text-yellow-800';
+    }
+  };
+
+  const getProgressPercentage = (task: Task) => {
+    if (task.progress.total === 0) return 0;
+    return Math.round((task.progress.completed / task.progress.total) * 100);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-lg text-gray-600">加载中...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* 操作按钮 */}
+      <div className="flex items-center justify-end">
+        <div className="flex space-x-3">
+            {/* 🆕 多选模式切换按钮 */}
+            <Button 
+              variant={isMultiSelectMode ? "default" : "outline"}
+              onClick={toggleMultiSelectMode}
+            >
+              <BarChart3 className="mr-2 h-4 w-4" />
+              {isMultiSelectMode ? '退出多选' : '聚合分析'}
+            </Button>
+            
+            {/* 🆕 聚合分析按钮 - 仅在多选模式且有选择时显示 */}
+            {isMultiSelectMode && selectedTasks.size >= 2 && (
+              <div className="flex items-center space-x-2">
+                <Button 
+                  onClick={handleCreateAggregation}
+                  disabled={loadingCompatibility || !aggregationCompatibility || (!aggregationCompatibility.canVertical && !aggregationCompatibility.canHorizontal)}
+                  className={`${
+                    aggregationCompatibility && (aggregationCompatibility.canVertical || aggregationCompatibility.canHorizontal)
+                      ? 'bg-purple-600 hover:bg-purple-700' 
+                      : 'bg-gray-400'
+                  }`}
+                >
+                  {loadingCompatibility ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      检测中...
+                    </>
+                  ) : (
+                    <>
+                      <BarChart3 className="mr-2 h-4 w-4" />
+                      创建聚合分析 ({getSelectedCompletedTasks().length})
+                    </>
+                  )}
+                </Button>
+                
+                {/* 兼容性提示 */}
+                {aggregationCompatibility && selectedTasks.size >= 2 && (
+                  <div className="text-xs">
+                    {aggregationCompatibility.canVertical && (
+                      <span className="text-green-600 mr-2">✓ 纵向聚合</span>
+                    )}
+                    {aggregationCompatibility.canHorizontal && (
+                      <span className="text-green-600">✓ 横向聚合</span>
+                    )}
+                    {!aggregationCompatibility.canVertical && !aggregationCompatibility.canHorizontal && (
+                      <span className="text-red-600">✗ 不兼容</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <Button 
+              variant="outline" 
+              onClick={handleRefresh}
+              disabled={refreshing}
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+              刷新
+            </Button>
+            <Link href="/workbench/tasks/new">
+              <Button>
+                <PlusCircle className="mr-2 h-4 w-4" />
+                新建评测任务
+              </Button>
+            </Link>
+          </div>
+        </div>
+
+        {/* 错误提示 */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-md p-4">
+            <div className="flex">
+              <XCircle className="h-5 w-5 text-red-400" />
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-red-800">加载失败</h3>
+                <div className="mt-2 text-sm text-red-700">{error}</div>
+                <div className="mt-4">
+                  <Button variant="outline" size="sm" onClick={handleRefresh}>
+                    重试
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 🆕 筛选和搜索区域 */}
+        <div className="bg-white shadow rounded-lg p-6">
+          <div className="flex flex-col sm:flex-row gap-4">
+            {/* 搜索框 */}
+            <div className="flex-1">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="搜索任务名称..."
+                  value={searchName}
+                  onChange={(e) => setSearchName(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                  className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* 状态筛选 */}
+            <div className="sm:w-40">
+              <select
+                value={statusFilter}
+                onChange={(e) => handleFilterChange('status', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">所有状态</option>
+                <option value="pending">等待中</option>
+                <option value="running">运行中</option>
+                <option value="completed">已完成</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option>
+              </select>
+            </div>
+
+            {/* 类型筛选 */}
+            <div className="sm:w-40">
+              <select
+                value={typeFilter}
+                onChange={(e) => handleFilterChange('type', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">所有类型</option>
+                <option value="single">单次运行</option>
+                <option value="multi">多次运行</option>
+              </select>
+            </div>
+
+            {/* 搜索按钮 */}
+            <Button onClick={handleSearch} className="sm:w-auto">
+              <Search className="mr-2 h-4 w-4" />
+              搜索
+            </Button>
+          </div>
+
+          {/* 结果统计 */}
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-sm text-gray-500">
+              共找到 {totalTasks} 个任务，当前显示第 {currentPage} 页，共 {totalPages} 页
+            </div>
+
+          </div>
+        </div>
+
+        {/* 统计卡片 */}
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <Play className="h-6 w-6 text-gray-400" />
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      总任务数
+                    </dt>
+                    <dd className="text-lg font-medium text-gray-900">
+                      {stats.total}
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <Clock className="h-6 w-6 text-yellow-500" />
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      等待中
+                    </dt>
+                    <dd className="text-lg font-medium text-gray-900">
+                      {stats.pending}
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <Activity className="h-6 w-6 text-blue-500" />
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      运行中
+                    </dt>
+                    <dd className="text-lg font-medium text-gray-900">
+                      {stats.running}
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <CheckCircle className="h-6 w-6 text-green-500" />
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      已完成
+                    </dt>
+                    <dd className="text-lg font-medium text-gray-900">
+                      {stats.completed}
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white overflow-hidden shadow rounded-lg">
+            <div className="p-5">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <XCircle className="h-6 w-6 text-red-500" />
+                </div>
+                <div className="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt className="text-sm font-medium text-gray-500 truncate">
+                      失败
+                    </dt>
+                    <dd className="text-lg font-medium text-gray-900">
+                      {stats.failed}
+                    </dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 任务列表 */}
+        <div className="bg-white shadow overflow-hidden sm:rounded-md">
+          <div className="px-4 py-5 sm:px-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg leading-6 font-medium text-gray-900">
+                  最近任务
+                </h3>
+                <p className="mt-1 max-w-2xl text-sm text-gray-500">
+                  最新创建和运行的评测任务
+                </p>
+              </div>
+              
+              {/* 🆕 多选模式下显示全选复选框和统计信息 */}
+              {isMultiSelectMode && (
+                <div className="flex items-center space-x-4">
+                  <div className="text-sm text-gray-600">
+                    已选择 {selectedTasks.size} / {tasks.filter(t => t.status === 'completed').length} 个已完成任务
+                  </div>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="selectAll"
+                      checked={selectedTasks.size > 0 && selectedTasks.size === tasks.filter(t => t.status === 'completed').length}
+                      onChange={(e) => handleSelectAll(e.target.checked)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="selectAll" className="ml-2 text-sm font-medium text-gray-700">
+                      全选已完成任务
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 🆕 局部loading指示器 */}
+          <div className={`relative ${paginationLoading ? 'opacity-60' : ''} transition-opacity duration-200`}>
+            {paginationLoading && (
+              <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
+                <div className="flex items-center space-x-2 text-blue-600">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  <span className="text-sm">加载中...</span>
+                </div>
+              </div>
+            )}
+
+            <ul className="divide-y divide-gray-200">
+            {tasks.map((task) => (
+              <li key={task.id} className="relative">
+                <div className={`flex items-center ${!isMultiSelectMode ? 'hover:bg-gray-50' : ''}`}>
+                  {/* 🆕 多选模式下显示复选框 */}
+                  {isMultiSelectMode && (
+                    <div className="px-4 py-4 flex-shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={selectedTasks.has(task.id)}
+                        disabled={task.status !== 'completed'}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleTaskSelect(task.id, e.target.checked);
+                        }}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded disabled:opacity-50"
+                      />
+                    </div>
+                  )}
+                  
+                  <Link 
+                    href={`/workbench/tasks/${task.id}`} 
+                    className={`block flex-1 ${!isMultiSelectMode ? 'hover:bg-gray-50' : ''}`}
+                  >
+                    <div className="px-4 py-4 sm:px-6">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center">
+                          {getStatusIcon(task.status)}
+                          <p className="ml-2 text-sm font-medium text-gray-900 truncate">
+                            {task.name}
+                          </p>
+                        {/* 🆕 任务类型标签 */}
+                        <span className={`ml-2 px-2 inline-flex text-xs leading-5 font-medium rounded-full ${getTaskType(task).badgeColor}`}>
+                          {getTaskType(task).label}
+                        </span>
+                        {/* 🆕 成本标签 */}
+                        <span className="ml-2 px-2 inline-flex text-xs leading-5 font-medium rounded-full bg-green-100 text-green-800">
+                          <DollarSign className="w-3 h-3 mr-1" />
+                          {formatTaskCost(task)}
+                        </span>
+                      </div>
+                      <div className="ml-2 flex-shrink-0 flex items-center space-x-2">
+                        <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(task.status)}`}>
+                          {getStatusText(task.status)}
+                        </span>
+                        {/* 🆕 克隆按钮 */}
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleCloneTask(task.id, task.name);
+                          }}
+                          className="inline-flex items-center p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all duration-200"
+                          title="克隆任务"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-2 sm:flex sm:justify-between">
+                      <div className="sm:flex">
+                        <p className="flex items-center text-sm text-gray-500">
+                          创建时间: {new Date(task.created_at).toLocaleString('zh-CN')}
+                        </p>
+                      </div>
+                      <div className="mt-2 flex items-center text-sm text-gray-500 sm:mt-0">
+                        {task.status === 'running' && task.progress.total > 0 && (
+                          <div className="flex items-center">
+                            <span className="mr-2">进度: {task.progress.completed}/{task.progress.total}</span>
+                            <div className="w-20 bg-gray-200 rounded-full h-2">
+                              <div 
+                                className="bg-blue-600 h-2 rounded-full transition-all duration-300" 
+                                style={{ width: `${getProgressPercentage(task)}%` }}
+                              ></div>
+                            </div>
+                            <span className="ml-2 text-xs">{getProgressPercentage(task)}%</span>
+                          </div>
+                        )}
+                        {task.status === 'completed' && task.finished_at && (
+                          <span>完成时间: {new Date(task.finished_at).toLocaleString('zh-CN')}</span>
+                        )}
+                      </div>
+                    </div>
+                    </div>
+                  </Link>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {tasks.length === 0 && !error && (
+            <div className="text-center py-12">
+              <Play className="mx-auto h-12 w-12 text-gray-400" />
+              <h3 className="mt-2 text-sm font-medium text-gray-900">暂无任务</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                开始创建您的第一个评测任务
+              </p>
+              <div className="mt-6">
+                <Link href="/workbench/tasks/new">
+                  <Button>
+                    <PlusCircle className="mr-2 h-4 w-4" />
+                    新建评测任务
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          )}
+
+          {/* 🆕 分页组件 */}
+          {totalPages > 1 && (
+            <div className="px-4 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+              <div className="text-sm text-gray-700">
+                显示第 {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, totalTasks)} 项，共 {totalTasks} 项
+              </div>
+
+              <div className="flex items-center space-x-2">
+                {/* 上一页 */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage <= 1}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  上一页
+                </Button>
+
+                {/* 页码 */}
+                <div className="flex items-center space-x-1">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    let pageNum;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => handlePageChange(pageNum)}
+                        className={`px-3 py-1 text-sm rounded ${
+                          pageNum === currentPage
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 下一页 */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage >= totalPages}
+                >
+                  下一页
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          </div> {/* 🆕 关闭局部loading容器 */}
+        </div>
+
+        {/* 🆕 克隆任务对话框 */}
+        {showCloneDialog && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg max-w-md w-full p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">克隆任务</h3>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    新任务名称
+                  </label>
+                  <input
+                    type="text"
+                    value={cloneTaskName}
+                    onChange={(e) => setCloneTaskName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="请输入新任务名称"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="text-sm text-gray-500">
+                  将复制原任务的所有配置，包括模板、模型、测试用例等设置。
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-3 mt-6">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowCloneDialog(false);
+                    setCloneTaskId(null);
+                    setCloneTaskName('');
+                  }}
+                  disabled={cloning}
+                >
+                  取消
+                </Button>
+                <Button
+                  onClick={executeCloneTask}
+                  disabled={cloning || !cloneTaskName.trim()}
+                >
+                  {cloning ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      克隆中...
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="mr-2 h-4 w-4" />
+                      确认克隆
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

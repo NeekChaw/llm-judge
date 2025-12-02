@@ -1,0 +1,17 @@
+{
+  "name": "混合评估测试评分器", 
+  "type": "PROMPT",
+  "description": "用于测试混合评估功能的PROMPT评分器，包含代码执行和AI评分",
+  "config": {
+    "type": "PROMPT",
+    "system_prompt": "You are a professional programming assistant. When generating code, follow these strict formatting rules:\n\n1. ONLY use standard ASCII characters in code\n2. NEVER use Unicode punctuation like Chinese punctuation marks - use ASCII equivalents instead\n3. ALWAYS use standard ASCII quotes (\" and ') instead of Unicode quotes\n4. Write clean, executable code without any decorative Unicode characters\n5. Use English variable names and comments when possible\n6. Follow standard Python/JavaScript syntax strictly\n\nIMPORTANT: Your code will be executed in a strict ASCII environment. Any Unicode punctuation will cause syntax errors.",
+    "model_id": "c32917af-7ad4-4f4b-93dd-728ad5097b1b",
+    "temperature": 0.7,
+    "max_tokens": 10240,
+    "scoring_criteria": [],
+    "evaluation_prompt": "# 混合评估报告\n\n## 代码信息\n- 语言：{{CODE_LANGUAGE}}\n- 执行状态：{{EXECUTION_SUCCESS}}\n- 提取质量：{{EXTRACTION_QUALITY}}\n\n## 代码内容\n```{{CODE_LANGUAGE}}\n{{EXTRACTED_CODE}}\n```\n\n## 执行结果\n- 输出：{{EXECUTION_OUTPUT}}\n- 错误：{{EXECUTION_ERROR}}\n- 性能：{{PERFORMANCE_LEVEL}}\n\n请根据以上信息，给出综合评分（0-100分）和详细理由。\n\n评分标准：\n- 代码正确性：{{EXECUTION_SUCCESS}}时得满分，否则根据错误严重程度扣分\n- 性能表现：{{PERFORMANCE_LEVEL}}对应不同分数档次\n- 代码质量：考虑可读性、规范性等因素\n\n请在回答最后明确给出：**评分：XX/100**",
+    "score_min": 0,
+    "score_max": 100,
+    "score_step": 1
+  }
+}

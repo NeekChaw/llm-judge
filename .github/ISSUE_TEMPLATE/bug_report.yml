@@ -1,0 +1,105 @@
+name: 🐛 Bug Report
+description: 报告一个bug以帮助我们改进
+title: "[Bug]: "
+labels: ["bug", "需要分类"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢您花时间填写这个bug报告！
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么？
+      description: 请清晰描述bug的现象
+      placeholder: 告诉我们您看到了什么！
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 如何复现这个问题？
+      placeholder: |
+        1. 访问 '...'
+        2. 点击 '....'
+        3. 滚动到 '....'
+        4. 看到错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 您期望发生什么？
+      placeholder: 应该...
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图
+      description: 如果可能，添加截图来说明问题
+      placeholder: 拖拽图片到这里
+
+  - type: dropdown
+    id: version
+    attributes:
+      label: 版本
+      description: 您使用的是哪个版本？
+      options:
+        - v2.5.x (最新)
+        - v2.4.x
+        - v2.3.x
+        - 其他 (请在描述中说明)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 部署方式
+      description: 您如何部署的应用？
+      options:
+        - Docker
+        - 本地开发 (npm run dev)
+        - 其他 (请在描述中说明)
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 请提供您的环境信息
+      placeholder: |
+        - OS: [e.g., Windows 11, macOS 14, Ubuntu 22.04]
+        - Node.js: [e.g., v18.17.0]
+        - Browser: [e.g., Chrome 120, Safari 17]
+        - Database: [e.g., Supabase, 本地PostgreSQL]
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 请粘贴相关的错误日志或控制台输出
+      render: shell
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: 检查清单
+      description: 在提交前请确认
+      options:
+        - label: 我已搜索现有Issues，确认这不是重复报告
+          required: true
+        - label: 我已阅读[贡献指南](https://github.com/your-repo/CONTRIBUTING.md)
+          required: true
+        - label: 我愿意提交PR来修复这个bug（如果我能解决）
+          required: false

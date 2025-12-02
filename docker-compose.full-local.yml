@@ -1,0 +1,217 @@
+# ================================================================
+# AI Benchmark V2 - 完全本地化部署（包括 PostgREST）
+# 包含：Next.js + PostgreSQL + Redis + PostgREST
+# 一键启动：docker-compose -f docker-compose.full-local.yml up -d
+# ================================================================
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai-benchmark-postgres
+    environment:
+      POSTGRES_DB: ai_benchmark
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ai_benchmark_postgres_2025}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgREST API (提供 HTTP API给客户端)
+  postgrest:
+    image: postgrest/postgrest:v12.0.2
+    container_name: ai-benchmark-postgrest
+    ports:
+      - "3001:3000"  # PostgREST 端口
+    environment:
+      PGRST_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-ai_benchmark_postgres_2025}@postgres:5432/ai_benchmark
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: anon  # 匿名角色
+      PGRST_JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-token-min-32-chars-long}
+      PGRST_OPENAPI_SERVER_PROXY_URI: http://localhost:3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    # PostgREST 健康检查（禁用，因为容器内没有 wget/curl）
+    # PostgREST 启动后会自动在日志中显示 "Listening on port 3000"
+    healthcheck:
+      disable: true
+
+  # ========================================
+  # Redis 缓存和队列（可选 - 高级功能）
+  # ========================================
+  # 默认使用Script模式（简单可靠），无需Redis
+  # 如需启用Redis队列模式：
+  #   1. 取消注释下面的Redis服务
+  #   2. 设置环境变量 FORCE_REDIS=true
+  #   3. 取消注释volumes中的redis_data
+  #   4. 取消注释app depends_on中的redis
+  # ========================================
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: ai-benchmark-redis
+  #   ports:
+  #     - "6379:6379"
+  #   command: >
+  #     redis-server
+  #     --appendonly yes
+  #     --requirepass ${REDIS_PASSWORD:-ai_benchmark_redis_2025}
+  #     --maxmemory 512mb
+  #     --maxmemory-policy allkeys-lru
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+  #   networks:
+  #     - ai-benchmark-network
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 3
+
+  # Next.js 应用
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 构建时注入的环境变量（客户端代码需要）
+        SUPABASE_URL: http://localhost:3001  # PostgREST API 地址
+        SUPABASE_ANON_KEY: local_anon_key_for_development
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    container_name: ai-benchmark-app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+
+      # 服务器端数据库配置（通过 PostgREST HTTP API）
+      - SUPABASE_URL=http://postgrest:3000
+      - SUPABASE_ANON_KEY=local_anon_key_for_development
+
+      # 客户端配置（通过 PostgREST HTTP API）
+      - NEXT_PUBLIC_SUPABASE_URL=http://localhost:3001
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=local_anon_key_for_development
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      - NEXT_PUBLIC_API_URL=http://localhost:3000/api
+
+      # Redis配置
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-ai_benchmark_redis_2025}
+      - REDIS_DB=${REDIS_DB:-0}
+      - TASK_PROCESSOR_MODE=${TASK_PROCESSOR_MODE:-script}
+
+      # 加密密钥
+      - CONFIG_ENCRYPTION_KEY=${CONFIG_ENCRYPTION_KEY:-default_key_please_change_in_production_min_32_chars}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-your-32-character-secret-key-1234}
+
+      # LLM API配置
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
+      - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+      - VOLCENGINE_API_KEY=${VOLCENGINE_API_KEY:-}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-}
+      - ALI_API_KEY=${ALI_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - DMX_API_KEY=${DMX_API_KEY:-}
+
+      # E2B代码沙箱配置
+      - E2B_API_KEY=${E2B_API_KEY:-}
+      - E2B_TIMEOUT_MS=${E2B_TIMEOUT_MS:-300000}
+      - E2B_MAX_CONCURRENT_SANDBOXES=${E2B_MAX_CONCURRENT_SANDBOXES:-10}
+
+      # 性能配置
+      - DEFAULT_CONCURRENT_LIMIT=${DEFAULT_CONCURRENT_LIMIT:-5}
+      - DEFAULT_API_TIMEOUT=${DEFAULT_API_TIMEOUT:-60000}
+      - DEFAULT_MAX_RETRIES=${DEFAULT_MAX_RETRIES:-3}
+      - SCRIPT_CHECK_INTERVAL=${SCRIPT_CHECK_INTERVAL:-5000}
+      - SCRIPT_CONCURRENT_LIMIT=${SCRIPT_CONCURRENT_LIMIT:-10}
+
+      # 文件上传限制
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-10485760}
+      - MAX_FILE_COUNT=${MAX_FILE_COUNT:-10}
+      - ALLOWED_MIME_TYPES=${ALLOWED_MIME_TYPES:-image/jpeg,image/png,image/gif,audio/mpeg,video/mp4}
+
+      # 其他
+      - TZ=${TZ:-Asia/Shanghai}
+      - NEXT_TELEMETRY_DISABLED=1
+
+    volumes:
+      - app_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgrest:
+        condition: service_started  # 使用 service_started 因为禁用了健康检查
+      # redis:  # ← Redis已注释，使用Script模式
+      #   condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
+    healthcheck:
+      test: ["CMD", "node", "health-check.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Nginx反向代理 (可选)
+  nginx:
+    image: nginx:alpine
+    container_name: ai-benchmark-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/ngin./config/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - ai-benchmark-network
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# 数据卷
+volumes:
+  postgres_data:
+    driver: local
+  # redis_data:  # ← Redis已注释，使用Script模式
+  #   driver: local
+  app_logs:
+    driver: local
+  nginx_logs:
+    driver: local
+
+# 网络配置
+networks:
+  ai-benchmark-network:
+    driver: bridge
