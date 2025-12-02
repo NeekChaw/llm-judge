@@ -70,6 +70,14 @@ npm run dev          # Linux/macOS
 npm run dev:windows  # Windows
 ```
 
+### 数据库初始化
+
+| 部署模式 | 初始化方式 | 说明 |
+|----------|------------|------|
+| **全本地模式** | 自动 | Docker 启动时自动执行 `supabase_export.sql` |
+| **混合模式** | 手动 | 需先在 Supabase SQL Editor 执行 `database/supabase_export.sql` |
+| **本地开发** | 手动 | 需先在 Supabase SQL Editor 执行 `database/supabase_export.sql` |
+
 ## 核心功能
 
 - **双模板系统**: 统一模板 + 自定义模板
